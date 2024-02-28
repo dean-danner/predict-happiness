@@ -1,1 +1,1 @@
-# predict-happiness
+# Happiness Predictor
