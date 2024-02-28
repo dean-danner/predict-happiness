@@ -1,0 +1,266 @@
+---
+title: "predicthappiness"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(forcats)
+library(plotROC)
+library(ggplot2)
+```
+
+## Data Details
+
+The world happiness report ranks 155 countries by their happiness levels, was released at the United Nations at an event celebrating International Day of Happiness on March 20th. The report continues to gain global recognition as governments, organizations and civil society increasingly use happiness indicators to inform their policy-making decisions. Leading experts across fields – economics, psychology, survey analysis, national statistics, health, public policy and more – describe how measurements of well-being can be used effectively to assess the progress of nations. We are looking at the reports from 2015, 2016, and 2017. The dataset has 13 variables, 12 of which are for each country individually. These variables all factor in to a countries happiness rating.
+
+```{r, include=FALSE}
+df2015 <- read.csv("/world-happiness-report/2015.csv",
+                   col.names=c("Country","Region","Rank","Score","SE","GDP",
+                               "Family","Health","Freedom","Trust","Generosity",
+                               "Dystopia"))
+df2015$Year <- 2015
+df2016 <- read.csv("/world-happiness-report/2016.csv",
+                   col.names=c("Country","Region","Rank","Score","LCI","UCI",
+                               "GDP","Family","Health","Freedom","Trust",
+                               "Generosity","Dystopia"))
+df2016$Year <- 2016
+df2017 <- read.csv("/world-happiness-report/2017.csv",
+                   col.names=c("Country","Rank","Score","Q3","Q1",
+                               "GDP","Family","Health","Freedom","Generosity",
+                               "Trust","Dystopia"))
+df2017$Year <- 2017
+```
+
+## Data Quality
+
+The data sets are rather complete, although in order to be combined, some of the headers had to be changed to be uniform among all of the sets
+There appears to be 2 NA values in the data set. It is safe to just omit those two lines since we have three copies of the data from three different years. There were also some duplicated values among the data sets that had to be consolidated and dealt with. I also made sure to create my train and test here with an 80/20 split.
+
+```{r, include=FALSE}
+dfRegion <- rbind(df2016[,c("Country","Region")],df2015[,c("Country","Region")]
+)
+dfRegion <- dfRegion[!duplicated(dfRegion),]
+df2017 <- df2017 %>%
+  left_join(dfRegion) %>%
+  select(Country, Region, everything())
+df2015 <- df2015 %>%
+  select(Country, Region, Rank, Score, GDP, Family, Health, Freedom,
+         Generosity, Trust, Dystopia, Year)
+df2016 <- df2016 %>%
+  select(Country, Region, Rank, Score, GDP, Family, Health, Freedom,
+         Generosity, Trust, Dystopia, Year)
+df2017 <- df2017 %>%
+  select(Country, Region, Rank, Score, GDP, Family, Health, Freedom,
+         Generosity, Trust, Dystopia, Year)
+happy <- rbind(df2015, df2016, df2017)
+
+happy <- na.omit(happy)
+
+tidx <- sample(nrow(happy),.8*nrow(happy))
+train <- happy[tidx,]
+test <- happy[-tidx,]
+```
+
+## Build Logistic Regression Model
+
+After some testing I decided that the countries GDP, Health, Freedom, and Region had the most effect at predicting a countries happiness score. So, I selected these from the data set, along with turning the happiness score into a categorical of "Happy" or "Unhappy" based off if it was greater than 5. I figured that 5 was a great place to draw the line based off of where the other countries statistics listed above landed.
+
+```{r, include=FALSE}
+trainLR <- train %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+```
+
+I made sure to create a fitControl in order to k-fold cross validate my model for the most accurate results.
+For the model to predict score, I used the train data set in order to create a logistic regression model using a binomial glm.
+
+```{r}
+fitControl = trainControl(method = "repeatedcv", number = 10, 
+                          repeats = 20, 
+                          summaryFunction = twoClassSummary,
+                          classProbs = TRUE, savePredictions = T)
+
+mod <- train(Score~., data = trainLR, 
+                          method = "glm", family="binomial",
+                          trControl = fitControl,
+                          metric = "ROC")
+```
+
+## Evaluate Logistic Regression
+
+Here, I created a confusion matrix for my logistic regression model to predict happiness. We can see that the accuracy is 88% which is really great! There are also not very many false-positive and false-negative values.
+
+```{r, echo=FALSE}
+trainLR$Score <- factor(trainLR$Score)
+trainLR$Prob <- mod$finalModel$fitted.values
+HappyPred <- function(prob,t) factor(ifelse(prob > t ,"Unhappy","Happy"))
+trainLR$HappyPred <- HappyPred(trainLR$Prob,0.5)
+confusionMatrix(trainLR$Score,trainLR$HappyPred,positive="Happy")
+```
+
+## Logistic Regression ROC Curve
+
+For the ROC curve here, we can see that it proves that this is indeed a very good model to predict happiness considering the value is 0.95 and the curve is very close to the upper left.
+
+```{r, echo=FALSE}
+plot <- ggplot(trainLR, aes(d = as.numeric(Score)-1, m = Prob)) + geom_roc(cutoffs.at=seq(0,1,.1))
+plot + annotate(geom="text", x=.5, y=.5, 
+                label=calc_auc(plot)$AUC)
+```
+
+## Test Logisic Regression
+
+For testing the model out of sample, I used the probability of the train set to predict what a hypothetical country's happiness rating would be using the test data.
+
+```{r, include=FALSE}
+testLR <- test %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+
+testLR$Prob <- predict(mod, newdata=testLR, type="prob")
+testLR$Score <- HappyPred(testLR$Prob$Happy,0.5)
+```
+
+## Build KNN Model
+
+After some testing I decided that the countries GDP, Health, Freedom, and Region had the most effect at predicting a countries happiness score. So, I selected these from the data set, along with turning the happiness score into a categorical of "Happy" or "Unhappy" based off if it was greater than 5. I figured that 5 was a great place to draw the line based off of where the other countries statistics listed above landed.
+
+```{r, include=FALSE}
+trainKNN <- train %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+```
+
+I made sure to create a fitControl in order to k-fold cross validate my model for the most accurate results.
+For the model to predict score, I used the train data set in order to create a knn model, which found an optimal k-value of 9.
+
+```{r}
+fitControl <- trainControl(method = "repeatedcv", number = 10, 
+                          repeats = 5,
+                          classProbs = TRUE, savePredictions = T,
+                          summaryFunction = twoClassSummary)
+
+mod <- train(Score ~., data = trainKNN, 
+                          method = "knn",
+                          trControl = fitControl,
+                          metric = "ROC")
+```
+
+## Evaluate KNN
+
+Here, I created a confusion matrix for my knn model to predict happiness. We can see that the accuracy is 88% for this one too! There are also not very many false-positive and false-negative values.
+
+```{r, echo=FALSE}
+trainKNN$Score <- factor(trainKNN$Score)
+trainKNN$Prob <- predict(mod, trainKNN, type="prob")$Unhappy
+trainKNN$Class <- predict(mod, trainKNN)
+trainKNN$HappyPred <- HappyPred(trainKNN$Prob,0.5)
+table(trainKNN$Class,trainKNN$HappyPred)
+trainKNN[trainKNN$Class!=trainKNN$HappyPred,c("Class","HappyPred","Prob")]
+confusionMatrix(trainKNN$Score,trainKNN$HappyPred,positive="Happy")
+```
+
+## KNN ROC Curve
+
+For the ROC curve here, we can see that it proves that this is indeed a very good model to predict happiness considering the value is 0.96 and the curve is very close to the upper left.
+
+```{r, echo=FALSE}
+plot <- ggplot(trainKNN, aes(d = as.numeric(Score)-1, m = Prob)) + geom_roc(cutoffs.at=seq(0,1,.1))
+plot + annotate(geom="text", x=.5, y=.5, 
+                label=calc_auc(plot)$AUC)
+```
+
+## Test KNN
+
+For testing the model out of sample, I used the probability of the train set to predict what a hypothetical country's happiness rating would be using the test data.
+
+```{r, include=FALSE}
+testKNN <- test %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+
+testKNN$Prob <- predict(mod, newdata=testKNN, type="prob")
+testKNN$Score <- HappyPred(testKNN$Prob$Unhappy,0.5)
+testKNN$Class <- predict(mod, testKNN)
+table(testKNN$Class,testKNN$Score)
+```
+
+## Build Naive Bayes Model
+
+After some testing I decided that the countries GDP, Health, Freedom, and Region had the most effect at predicting a countries happiness score. So, I selected these from the data set, along with turning the happiness score into a categorical of "Happy" or "Unhappy" based off if it was greater than 5. I figured that 5 was a great place to draw the line based off of where the other countries statistics listed above landed.
+
+```{r, include=FALSE}
+trainNB <- train %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+```
+
+I made sure to create a fitControl in order to k-fold cross validate my model for the most accurate results.
+For the model to predict score, I used the train data set in order to create a naive bayes model.
+
+```{r}
+fitControl <- trainControl(method = "repeatedcv", number = 10, 
+                          repeats = 5,
+                          classProbs = TRUE, savePredictions = T,
+                          summaryFunction = twoClassSummary)
+
+mod <- train(trainNB[,-1], trainNB$Score,
+                          method = "nb",
+                          trControl = fitControl,
+                          metric = "ROC")
+```
+
+## Evaluate Naive Bayes
+
+Here, I created a confusion matrix for my naive bayes model to predict happiness. We can see that the accuracy is 88% for this model. There are also not very many false-positive and false-negative values just like the other models.
+
+```{r, echo=FALSE}
+trainNB$Score <- factor(trainNB$Score)
+trainNB$Prob <- predict(mod$finalModel, trainNB, 
+                type="raw")$posterior[,2]
+trainNB$Class <- predict(mod, trainNB, type="raw")
+trainNB$HappyPred <- HappyPred(trainNB$Prob,0.5)
+table(trainNB$Class,trainNB$HappyPred)
+confusionMatrix(trainNB$Score,trainNB$HappyPred,positive="Happy")
+```
+
+## Naive Bayes ROC Curve
+
+For the ROC curve here, we can see that it proves that this is indeed a very good model to predict happiness considering the value is 0.95 and the curve is very close to the upper left.
+
+```{r, echo=FALSE}
+plot <- ggplot(trainNB, aes(d = as.numeric(Score)-1, m = Prob)) + geom_roc(cutoffs.at=seq(0,1,.1))
+plot + annotate(geom="text", x=.5, y=.5, 
+                label=calc_auc(plot)$AUC)
+```
+
+## Test Naive Bayes
+
+For testing the model out of sample, I used the probability of the train set to predict what a hypothetical country's happiness rating would be using the test data.
+
+```{r, include=FALSE}
+testNB <- train %>%
+  select(Score, Country, GDP, Health, Freedom, Region) %>%
+  mutate(Score = ifelse(Score >= 5, "Happy", "Unhappy")) %>%
+  select(Score, GDP, Health, Freedom, Region)
+
+testNB$Prob <- predict(mod, newdata=testNB, type="prob")
+testNB$Score <- HappyPred(testNB$Prob$Unhappy,0.5)
+testNB$Class <- predict(mod, testNB)
+table(testNB$Class,testNB$Score)
+```
+
+## Conclusion
+
+Overall, I found that the features GDP, Health, Freedom, and Region of the combined happiness rating data set had the most impact on a country's total happiness score. I also found that Logistic Regression, KNN, and Naive Bayes are essentially all equally good at predicting country happiness values when given data. They all had an accuracy of about 88% and a .95 ROC curve. The client's next steps should be to use any of the above models to predict a country of their choice's happiness rating based off GDP, Health, Freedom, and Region values.
